@@ -1,0 +1,54 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+    
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+    {
+        "name": "train_m3gnet.py",
+        "type": "debugpy",
+        "request": "launch",
+        "cwd": "/home/lijiahang/mattersim/unary/m3gnet-omat24-rjob-lr1e-3-stepsize50",
+        "program": "/home/lijiahang/mattersim/unary/m3gnet-omat24-rjob-lr1e-3-stepsize50/train_m3gnet.py",
+        "console": "integratedTerminal",
+        "env": {
+            "LOCAL_RANK": "0"
+        },
+        "args": [
+            "--run_name", "m3gnet-omat24-rjob-lr1e-3-stepsize50",
+            "--train_data_path", "../omat24_unary/train.pkl",
+            "--valid_data_path", "../omat24_unary/valid.pkl",
+            "--save_path", "./results",
+            // "--save_checkpoint",
+            "--device", "cuda",
+            // "--device", "cpu",
+            "--cutoff", "5.0",
+            "--threebody_cutoff", "4.0",
+            "--epochs", "2000",
+            "--batch_size", "256",
+            "--lr", "1e-3",
+            "--step_size", "50",
+            "--include_forces",
+            "--include_stresses",
+            "--force_loss_ratio", "1.0",
+            "--stress_loss_ratio", "0.1",
+            "--early_stop_patience", "50",
+            "--seed", "42",
+            "--normalize",
+            "--scale_key", "per_species_forces_rms",
+            "--shift_key", "per_species_energy_mean_linear_reg",
+            // "--wandb",
+            // "--wandb_api_key", "2a468ccc68ac8c2d9ead417447e0a9af5cd57c53",
+            // "--wandb_project", "m3gnet-unary"
+        ]
+    }
+    ]
+}
