@@ -107,6 +107,7 @@ class Potential(nn.Module):
         self.rank = None
 
         self.use_finetune_label_loss = kwargs.get("use_finetune_label_loss", False)
+        self.global_step = 0
 
     def freeze_reset_model(
         self,
@@ -579,7 +580,10 @@ class Potential(nn.Module):
                 loss_s,
             )
 
-            if batch_idx % 10 == 0:
+            if mode == 'train':
+                self.global_step += 1
+
+            if batch_idx % 10 == 0 and mode == 'train':
                 if log:
                     logger.info(
                         "%s: Batch %d / %d, Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f"  # noqa: E501
@@ -668,7 +672,7 @@ class Potential(nn.Module):
                     f"{mode}/mae_tot_epoch": e_mae + f_mae + s_mae,
                     f"{mode}/epoch": epoch,
                 },
-                step=(epoch + 1) * len(dataloader),
+                step=self.global_step,
             )
 
         return (loss_avg_, e_mae, f_mae, s_mae)
