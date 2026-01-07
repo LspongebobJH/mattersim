@@ -579,6 +579,35 @@ class Potential(nn.Module):
                 loss_s,
             )
 
+            if batch_idx % 10 == 0:
+                if log:
+                    logger.info(
+                        "%s: Batch %d / %d, Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f"  # noqa: E501
+                        % (
+                            mode,
+                            batch_idx,
+                            len(dataloader),
+                            loss_.item(),
+                            e_mae.item(),
+                            f_mae.item(),
+                            s_mae.item(),
+                        ),
+                    )
+
+                if wandb and ((not is_distributed) or self.rank == 0):
+                    wandb.log(
+                        {
+                            f"{mode}/loss": loss_,
+                            f"{mode}/mae_e": e_mae,
+                            f"{mode}/mae_f": f_mae,
+                            f"{mode}/mae_s": s_mae,
+                            f"{mode}/lr": self.scheduler.get_last_lr()[0],
+                            f"{mode}/mae_tot": e_mae + f_mae + s_mae,
+                            f"{mode}/batch": batch_idx + epoch * len(dataloader),
+                        },
+                        step=batch_idx + epoch * len(dataloader),
+                    )
+
             # loss backward
             if mode == "train":
                 self.optimizer.zero_grad()
@@ -631,14 +660,15 @@ class Potential(nn.Module):
         if wandb and ((not is_distributed) or self.rank == 0):
             wandb.log(
                 {
-                    f"{mode}/loss": loss_avg_,
-                    f"{mode}/mae_e": e_mae,
-                    f"{mode}/mae_f": f_mae,
-                    f"{mode}/mae_s": s_mae,
-                    f"{mode}/lr": self.scheduler.get_last_lr()[0],
-                    f"{mode}/mae_tot": e_mae + f_mae + s_mae,
+                    f"{mode}/loss_epoch": loss_avg_,
+                    f"{mode}/mae_e_epoch": e_mae,
+                    f"{mode}/mae_f_epoch": f_mae,
+                    f"{mode}/mae_s_epoch": s_mae,
+                    f"{mode}/lr_epoch": self.scheduler.get_last_lr()[0],
+                    f"{mode}/mae_tot_epoch": e_mae + f_mae + s_mae,
+                    f"{mode}/epoch": epoch,
                 },
-                step=epoch,
+                step=(epoch + 1) * len(dataloader),
             )
 
         return (loss_avg_, e_mae, f_mae, s_mae)

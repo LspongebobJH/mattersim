@@ -16,44 +16,54 @@ from mattersim.forcefield.m3gnet.scaling import AtomScaling
 from mattersim.forcefield.potential import Potential
 from mattersim.utils.atoms_utils import AtomsAdaptor
 from mattersim.utils.logger_utils import get_logger
+import datetime
 
+# TODO (jiahang): distributed training set gpu device for each process
 logger = get_logger()
-local_rank = int(os.environ["LOCAL_RANK"])
+local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
 def main(args):
-    if args.device == "cuda":
-        torch.distributed.init_process_group(backend="nccl")
-    else:
-        torch.distributed.init_process_group(backend="gloo")
+    if args.distributed:
+        if args.device == "cuda":
+            torch.distributed.init_process_group(backend="nccl")
+        else:
+            torch.distributed.init_process_group(backend="gloo")
     args_dict = vars(args)
     if args.wandb and local_rank == 0:
-        wandb_api_key = (
-            args.wandb_api_key
-            if args.wandb_api_key is not None
-            else os.getenv("WANDB_API_KEY")
-        )
-        wandb.login(key=wandb_api_key)
-        wandb.init(
+        # wandb_api_key = (
+        #     args.wandb_api_key
+        #     if args.wandb_api_key is not None
+        #     else os.getenv("WANDB_API_KEY")
+        # )
+        # wandb.login(key=wandb_api_key)
+        # use current timestamp as suffix
+        run_name = args.wandb_project + '_' + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        wandb_dir = os.path.join(args.wandb_dir, run_name)
+        run = wandb.init(
             project=args.wandb_project,
-            name=args.run_name,
+            name=run_name,
             config=args,
-            mode="offline"
+            mode="offline",
+            dir=wandb_dir
             # id=args.run_name,
             # resume="allow",
         )
+        # parent dir of run.dir
+        parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(run.dir))) # jiahang: dirty!
+        # create checkpoint save path under parent dir
+        args.save_path = os.path.join(parent_dir, 'checkpoints')
+        os.makedirs(args.save_path, exist_ok=True)
 
     if args.wandb:
         args_dict["wandb"] = wandb
 
-    torch.distributed.barrier()
+    if args.distributed:
+        torch.distributed.barrier()
 
     # set random seed
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-
-    if args.device == "cuda":
-        torch.cuda.set_device(local_rank)
 
     if args.train_data_path.endswith(".pkl"):
         with open(args.train_data_path, "rb") as f:
@@ -71,6 +81,7 @@ def main(args):
         if args.include_stresses:
             stresses.append(atoms.get_stress(voigt=False) / GPa)  # convert to GPa
 
+    logger.info("Building training dataloader...")
     dataloader = build_dataloader(
         atoms_train,
         energies,
@@ -78,7 +89,8 @@ def main(args):
         stresses,
         shuffle=True,
         pin_memory=(args.device == "cuda"),
-        is_distributed=True,
+        is_distributed=args.distributed,
+        multiprocessing=4,
         **args_dict,
     )
 
@@ -118,7 +130,7 @@ def main(args):
             forces_val,
             stresses_val,
             pin_memory=(args.device == "cuda"),
-            is_distributed=True,
+            is_distributed=args.distributed,
             **args_dict,
         )
     else:
@@ -151,20 +163,21 @@ def main(args):
         logger.info("Applying data normalizer to the model.")
         potential.model.set_normalizer(scale)
 
-    if args.device == "cuda":
-        potential.model = torch.nn.parallel.DistributedDataParallel(potential.model)
-    torch.distributed.barrier()
+    if args.distributed:
+        if args.device == "cuda":
+            potential.model = torch.nn.parallel.DistributedDataParallel(potential.model)
+        torch.distributed.barrier()
 
     potential.train_model(
         dataloader,
         val_dataloader,
         loss=torch.nn.HuberLoss(delta=0.01),
-        is_distributed=True,
+        is_distributed=args.distributed,
         **args_dict,
     )
 
-    if local_rank == 0 and args.save_checkpoint and args.wandb:
-        wandb.save(os.path.join(args.save_path, "best_model.pth"))
+    # if local_rank == 0 and args.save_checkpoint and args.wandb:
+    #     wandb.save(os.path.join(args.save_path, "best_model.pth"))
 
 
 if __name__ == "__main__":
@@ -172,7 +185,7 @@ if __name__ == "__main__":
 
     # path parameters
     parser.add_argument(
-        "--run_name", type=str, default="example", help="name of the run"
+        "--distributed", action="store_true", help="Whether to use distributed training"
     )
     parser.add_argument(
         "--train_data_path", type=str, default="./sample.xyz", help="train data path"
@@ -185,9 +198,6 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Path to a pre-trained model for fine-tuning. If not provided, trains a new model from scratch.",  # noqa: E501
-    )
-    parser.add_argument(
-        "--save_path", type=str, default="./results", help="path to save the model"
     )
     parser.add_argument(
         "--save_checkpoint",
@@ -291,5 +301,6 @@ if __name__ == "__main__":
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb_api_key", type=str, default=None)
     parser.add_argument("--wandb_project", type=str, default="wandb_test")
+    parser.add_argument("--wandb_dir", type=str, default="./wandb_logs")
     args = parser.parse_args()
     main(args)
