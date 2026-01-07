@@ -16,23 +16,20 @@
         "name": "train_m3gnet.py",
         "type": "debugpy",
         "request": "launch",
-        "cwd": "/home/lijiahang/mattersim/unary/m3gnet-omat24-rjob-lr1e-3-stepsize50",
-        "program": "/home/lijiahang/mattersim/unary/m3gnet-omat24-rjob-lr1e-3-stepsize50/train_m3gnet.py",
+        "cwd": "/home/lijiahang/mattersim/",
+        "program": "train_m3gnet.py",
         "console": "integratedTerminal",
         "env": {
-            "LOCAL_RANK": "0"
+            "LOCAL_RANK": "0",
         },
         "args": [
-            "--run_name", "m3gnet-omat24-rjob-lr1e-3-stepsize50",
-            "--train_data_path", "../omat24_unary/train.pkl",
-            "--valid_data_path", "../omat24_unary/valid.pkl",
-            "--save_path", "./results",
-            // "--save_checkpoint",
+            "--train_data_path", "./unary/omat24_unary/train.pkl",
+            "--valid_data_path", "./unary/omat24_unary/valid.pkl",
             "--device", "cuda",
-            // "--device", "cpu",
             "--cutoff", "5.0",
             "--threebody_cutoff", "4.0",
-            "--epochs", "2000",
+            // "--epochs", "2000", # jiahang: debug!
+            "--epochs", "2",
             "--batch_size", "256",
             "--lr", "1e-3",
             "--step_size", "50",
@@ -45,9 +42,9 @@
             "--normalize",
             "--scale_key", "per_species_forces_rms",
             "--shift_key", "per_species_energy_mean_linear_reg",
-            // "--wandb",
-            // "--wandb_api_key", "2a468ccc68ac8c2d9ead417447e0a9af5cd57c53",
-            // "--wandb_project", "m3gnet-unary"
+            "--wandb",
+            "--wandb_project", "m3gnet_test",
+            "--wandb_dir", "/mnt/shared-storage-user/lijiahang/wandb/mattersim",
         ]
     }
     ]
