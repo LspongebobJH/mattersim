@@ -45,6 +45,7 @@
             "--wandb",
             "--wandb_project", "m3gnet_test",
             "--wandb_dir", "/mnt/shared-storage-user/lijiahang/wandb/mattersim",
+            "--load_model_path", "/mnt/shared-storage-user/lijiahang/wandb/mattersim/m3gnet_test_20260107_112513/checkpoints/best_model.pth",
         ]
     }
     ]

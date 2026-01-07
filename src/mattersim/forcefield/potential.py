@@ -597,12 +597,12 @@ class Potential(nn.Module):
                 if wandb and ((not is_distributed) or self.rank == 0):
                     wandb.log(
                         {
-                            f"{mode}/loss": loss_,
-                            f"{mode}/mae_e": e_mae,
-                            f"{mode}/mae_f": f_mae,
-                            f"{mode}/mae_s": s_mae,
-                            f"{mode}/lr": self.scheduler.get_last_lr()[0],
-                            f"{mode}/mae_tot": e_mae + f_mae + s_mae,
+                            f"{mode}/loss_batch": loss_,
+                            f"{mode}/mae_e_batch": e_mae,
+                            f"{mode}/mae_f_batch": f_mae,
+                            f"{mode}/mae_s_batch": s_mae,
+                            f"{mode}/lr_batch": self.scheduler.get_last_lr()[0],
+                            f"{mode}/mae_tot_batch": e_mae + f_mae + s_mae,
                             f"{mode}/batch": batch_idx + epoch * len(dataloader),
                         },
                         step=batch_idx + epoch * len(dataloader),
