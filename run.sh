@@ -53,7 +53,7 @@ torchrun \
     --node_rank="$NODE_RANK" \
     --rdzv_backend=c10d \
     --rdzv_endpoint="${MASTER_ADDR}:${MASTER_PORT}" \
-    --rdzv_id="${JOB_ID:-mptrj}" \
+    --rdzv_id="${JOB_ID:-mattersim}" \
     train_m3gnet.py \
     --distributed \
     --train_data_path ${train_data_path} \
