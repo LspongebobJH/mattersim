@@ -6,7 +6,6 @@ export NODES="node/gpu-l-lg-cmc-h-h200-0238.host.h.pjlab.org.cn"
 num_nodes=1
 name="mattersim"
 
-chmod +x ${JOB_DIR}/run_parallel.sh
 rjob submit \
 --enable-sshd \
 --name=${name} \
