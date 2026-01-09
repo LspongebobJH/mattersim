@@ -90,7 +90,7 @@ def main(args):
         shuffle=True,
         pin_memory=(args.device == "cuda"),
         is_distributed=args.distributed,
-        multiprocessing=4,
+        multiprocessing=2,
         **args_dict,
     )
 
