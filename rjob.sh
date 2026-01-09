@@ -15,6 +15,7 @@ rjob submit \
 --charged-group=omnimat_gpu \
 --private-machine=group \
 --mount=gpfs://gpfs1/${USER_NAME}:/mnt/shared-storage-user/${USER_NAME} \
+--mount=gpfs://gpfs2/ailab-omnimat-shared:/mnt/shared-storage-gpfs2/ailab-omnimat-shared \
 --image=registry.h.pjlab.org.cn/ailab-omnimat/chenshuizhou-workspace:20250917184047 \
 -P ${num_nodes} \
 --host-network=true \
