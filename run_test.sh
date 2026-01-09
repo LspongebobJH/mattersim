@@ -12,7 +12,6 @@ valid_data_path="/mnt/shared-storage-gpfs2/ailab-omnimat-shared/lijielan/dataset
 #     --rdzv_id="mattersim" \
 
 python train_m3gnet.py \
-    --distributed \
     --train_data_path ${train_data_path} \
     --valid_data_path ${valid_data_path} \
     --save_checkpoint \
