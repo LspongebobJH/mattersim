@@ -26,6 +26,7 @@
             "--train_data_path", "./unary/omat24_unary/train.pkl",
             "--valid_data_path", "./unary/omat24_unary/valid.pkl",
             "--device", "cuda",
+            // "--device", "cpu",
             "--cutoff", "5.0",
             "--threebody_cutoff", "4.0",
             // "--epochs", "2000", # jiahang: debug!
@@ -45,7 +46,7 @@
             "--wandb",
             "--wandb_project", "m3gnet_test",
             "--wandb_dir", "/mnt/shared-storage-user/lijiahang/wandb/mattersim",
-            "--load_model_path", "/mnt/shared-storage-user/lijiahang/wandb/mattersim/m3gnet_test_20260107_112513/checkpoints/best_model.pth",
+            // "--load_model_path", "/mnt/shared-storage-user/lijiahang/wandb/mattersim/m3gnet_test_20260107_112513/checkpoints/best_model.pth",
         ]
     }
     ]

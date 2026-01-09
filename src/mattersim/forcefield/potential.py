@@ -109,7 +109,7 @@ class Potential(nn.Module):
         self.use_finetune_label_loss = kwargs.get("use_finetune_label_loss", False)
         self.global_step = 0
 
-    def freeze_reset_model(
+    def freeze_reset_model( # jiahang: reference
         self,
         finetune_layers: int = -1,
         reset_head_for_finetune: bool = False,

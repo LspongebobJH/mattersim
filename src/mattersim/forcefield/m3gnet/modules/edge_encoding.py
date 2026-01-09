@@ -123,7 +123,7 @@ class SmoothBesselBasis(nn.Module):
             / r_max**1.5
             * (n + 1)
             * (n + 2)
-            / torch.sqrt(2 * n**2 + 6 * n + 5)
+            / torch.sqrt(2 * n**2 + 6 * n + 5) # jiahang: expansion of (n+1)^2+(n+2)^2
         )
         en = n**2 * (n + 2) ** 2 / (4 * (n + 1) ** 4 + 1)
         dn = [torch.tensor(1.0).float()]

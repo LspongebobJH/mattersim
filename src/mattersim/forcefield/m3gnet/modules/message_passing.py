@@ -227,7 +227,7 @@ class MainBlock(nn.Module):
             edge_length,
             num_edges,
             num_triple_ij.view(-1),
-        )
+        ) # jiahang: equation (2) and (3), three_basis is product of RBF and SH, that is, SBF
 
         # update bond feature
         feat = torch.concat(
@@ -246,13 +246,13 @@ class MainBlock(nn.Module):
             dim=1,  # noqa: E501
         )
         atom_attr_prime = self.gated_mlp_atom(feat) * self.edge_layer_atom(
-            edge_attr_zero
+            edge_attr_zero # jiahang: equation (4)
         )
         atom_attr = atom_attr + scatter(  # noqa: E501
             atom_attr_prime,
             edge_index[0],
             dim=0,
             dim_size=torch.sum(num_atoms).item(),  # noqa: E501
-        )
+        ) # jiahang: equation (5)
 
-        return atom_attr, edge_attr
+        return atom_attr, edge_attr # jiahang: no state variable
