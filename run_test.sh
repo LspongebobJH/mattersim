@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -ex
 
-train_data_path="/mnt/shared-storage-gpfs2/ailab-omnimat-shared/lijielan/datasets/mptrj/oxides/train/oxide_train.pkl"
-valid_data_path="/mnt/shared-storage-gpfs2/ailab-omnimat-shared/lijielan/datasets/mptrj/oxides/valid/oxide_valid.pkl"
+# train_data_path="/mnt/shared-storage-gpfs2/ailab-omnimat-shared/lijielan/datasets/mptrj/oxides/train/oxide_train.pkl"
+# valid_data_path="/mnt/shared-storage-gpfs2/ailab-omnimat-shared/lijielan/datasets/mptrj/oxides/valid/oxide_valid.pkl"
+train_data_path="./unary/omat24_unary/train.pkl"
+valid_data_path="./unary/omat24_unary/train.pkl"
 # torchrun \
 #     --nnodes=1 \
 #     --nproc_per_node=1 \
