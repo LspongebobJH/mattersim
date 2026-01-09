@@ -10,7 +10,7 @@ rjob submit \
 --enable-sshd \
 --name=${name} \
 --gpu=8 \
---memory=128000 \
+--memory=256000 \
 --cpu=64 \
 --charged-group=omnimat_gpu \
 --private-machine=group \
