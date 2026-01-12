@@ -586,9 +586,10 @@ class Potential(nn.Module):
             if batch_idx % 10 == 0 and mode == 'train':
                 if log:
                     logger.info(
-                        "%s: Batch %d / %d, Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f"  # noqa: E501
+                        "%s: Epoch %d, Batch %d / %d, Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f"  # noqa: E501
                         % (
                             mode,
+                            epoch,
                             batch_idx,
                             len(dataloader),
                             loss_.item(),
@@ -649,9 +650,10 @@ class Potential(nn.Module):
 
         if log:
             logger.info(
-                "%s: Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f, Time: %.2fs, lr: %.8f\n"  # noqa: E501
+                "%s: Epoch: %d, Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f, Time: %.2fs, lr: %.8f\n"  # noqa: E501
                 % (
                     mode,
+                    epoch,
                     loss_avg.compute().item(),
                     e_mae,
                     f_mae,

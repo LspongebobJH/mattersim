@@ -143,7 +143,7 @@ def build_dataloader(
 
         logger.info("Create DataLoader_pyg")
         return DataLoader_pyg(
-            preprocessed_data,
+            dataset,
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=num_workers,
