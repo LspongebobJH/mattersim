@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from ase import Atoms
 from torch_geometric.loader import DataLoader as DataLoader_pyg
+from torch.utils.data import Dataset
 
 from mattersim.datasets.utils.convertor import GraphConvertor
 from mattersim.utils.logger_utils import get_logger
@@ -13,6 +14,29 @@ from tqdm import tqdm
 
 logger = get_logger()
 
+class LazyM3GNetDataset(Dataset):
+    def __init__(self, atoms, energies, forces, stresses, convertor, **kwargs):
+        self.atoms = atoms
+        self.energies = energies
+        self.forces = forces
+        self.stresses = stresses
+        self.convertor = convertor
+        self.kwargs = kwargs
+
+    def __len__(self):
+        return len(self.atoms)
+
+    def __getitem__(self, idx):
+        # Convert the graph on-the-fly only when requested
+        # We copy() to ensure thread safety if num_workers > 0
+        graph = self.convertor.convert(
+            self.atoms[idx].copy(),
+            self.energies[idx],
+            self.forces[idx],
+            self.stresses[idx],
+            **self.kwargs
+        )
+        return graph
 
 def build_dataloader(
     atoms: list[Atoms] = None,
@@ -48,7 +72,7 @@ def build_dataloader(
         - dataset : the dataset object for the dataloader
                     only used for graphormer and geomformer
     """
-
+    logger.info("Create GraphConvertor")
     convertor = GraphConvertor(model_type, cutoff, True, threebody_cutoff)
 
     preprocessed_data = []
@@ -73,66 +97,51 @@ def build_dataloader(
             stresses = [None] * length
 
     if model_type == "m3gnet":
-        if multiprocessing == 0 and multithreading == 0:
-            # start = time.time()
-            for graph, energy, force, stress in zip(atoms, energies, forces, stresses):
-                graph = convertor.convert(graph.copy(), energy, force, stress, **kwargs)
-                if graph is not None:
-                    preprocessed_data.append(graph)
-            # logger.info("Data preprocessing time: {:.2f} s".format(time.time() - start))
-        elif multithreading > 0 and multiprocessing == 0:
-            from multiprocessing.pool import ThreadPool
+        
+        # if multiprocessing == 0 and multithreading == 0:
+        #     # start = time.time()
+        #     for graph, energy, force, stress in zip(atoms, energies, forces, stresses):
+        #         graph = convertor.convert(graph.copy(), energy, force, stress, **kwargs)
+        #         if graph is not None:
+        #             preprocessed_data.append(graph)
+        #     # logger.info("Data preprocessing time: {:.2f} s".format(time.time() - start))
+        # elif multithreading > 0 and multiprocessing == 0:
+        #     from multiprocessing.pool import ThreadPool
 
-            warnings.warn("multithreading is experimental")
-            warnings.warn("it may not be faster than single thread due to GIL.")
-            logger.info("Using multithreading with {} threads".format(multithreading))
-            start = time.time()
-            pool = ThreadPool(processes=multithreading)
-            preprocessed_data = pool.starmap(
-                convertor.convert, zip(atoms, energies, forces, stresses)
-            )
-            pool.close()
-            logger.info("Time elapsed: {:.2f} s".format(time.time() - start))
-        elif multiprocessing > 0 and multithreading == 0:
-            # import multiprocessing as mp
+        #     warnings.warn("multithreading is experimental")
+        #     warnings.warn("it may not be faster than single thread due to GIL.")
+        #     logger.info("Using multithreading with {} threads".format(multithreading))
+        #     start = time.time()
+        #     pool = ThreadPool(processes=multithreading)
+        #     preprocessed_data = pool.starmap(
+        #         convertor.convert, zip(atoms, energies, forces, stresses)
+        #     )
+        #     pool.close()
+        #     logger.info("Time elapsed: {:.2f} s".format(time.time() - start))
+        # elif multiprocessing > 0 and multithreading == 0:
+        #     # use joblib to implement multiprocessing
+        #     from joblib import Parallel, delayed
+        #     logger.info("Using multiprocessing with {} workers".format(multiprocessing))
+        #     start = time.time()
+        #     results = Parallel(n_jobs=multiprocessing)(
+        #         delayed(multiprocess_data)(atoms[int(i * length / multiprocessing): int((i + 1) * length / multiprocessing)], 1)
+        #         for i in range(multiprocessing)
+        #     )
+        #     logger.info("Collecting results")
+        #     for result in results:
+        #         for graph in result:
+        #             if graph is not None:
+        #                 preprocessed_data.append(graph)
+        #     logger.info("Time for multiprocessing: {:.2f} s".format(time.time() - start))
+        # else:
+        #     raise NotImplementedError
 
-            # warnings.warn("multiprocessing is experimental.")
-            # logger.info("Using multiprocessing with {} workers".format(multiprocessing))
-            # # torch.multiprocessing.set_sharing_strategy('file_system')
-            # start = time.time()
-            # pool = mp.Pool(multiprocessing)
-            # results = []
-            # for i in range(multiprocessing):
-            #     left = int(i * length / multiprocessing)
-            #     right = int((i + 1) * length / multiprocessing)
-            #     results.append(
-            #         pool.apply_async(multiprocess_data, args=(atoms[left:right], 1))
-            #     )
-            # pool.close()
-            # pool.join()
-            # for result in results:
-            #     graph = result.get()
-            #     if graph is not None:
-            #         preprocessed_data.extend(graph)
-            # logger.info("Time for multiprocessing: {:.2f} s".format(time.time() - start))
+        logger.info("Create LazyM3GNetDataset")
+        dataset = LazyM3GNetDataset(
+            atoms, energies, forces, stresses, convertor, **kwargs
+        )
 
-            # use joblib to implement multiprocessing
-            from joblib import Parallel, delayed
-            logger.info("Using multiprocessing with {} workers".format(multiprocessing))
-            start = time.time()
-            results = Parallel(n_jobs=multiprocessing)(
-                delayed(multiprocess_data)(atoms[int(i * length / multiprocessing): int((i + 1) * length / multiprocessing)], 1)
-                for i in range(multiprocessing)
-            )
-            logger.info("Collecting results")
-            for result in results:
-                for graph in result:
-                    if graph is not None:
-                        preprocessed_data.append(graph)
-            logger.info("Time for multiprocessing: {:.2f} s".format(time.time() - start))
-        else:
-            raise NotImplementedError
-
+        logger.info("Create DataLoader_pyg")
         return DataLoader_pyg(
             preprocessed_data,
             batch_size=batch_size,
