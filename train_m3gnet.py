@@ -9,6 +9,7 @@ import torch
 import torch.distributed
 import wandb
 from ase.units import GPa
+from joblib import Parallel, delayed
 
 from mattersim.datasets.utils.build import build_dataloader
 from mattersim.forcefield.m3gnet.m3gnet import M3Gnet
@@ -17,10 +18,17 @@ from mattersim.forcefield.potential import Potential
 from mattersim.utils.atoms_utils import AtomsAdaptor
 from mattersim.utils.logger_utils import get_logger
 import datetime
+from tqdm import tqdm
 
 # TODO (jiahang): distributed training set gpu device for each process
 logger = get_logger()
 local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
+def get_properties(atoms, include_forces, include_stresses):
+    energy = atoms.get_potential_energy()
+    force = atoms.get_forces() if include_forces else None
+    stress = atoms.get_stress(voigt=False) / GPa if include_stresses else None
+    return energy, force, stress
 
 def main(args):
     if args.distributed:
@@ -70,16 +78,27 @@ def main(args):
             atoms_train = pkl.load(f)
     else:
         atoms_train = AtomsAdaptor.from_file(filename=args.train_data_path)
-    energies = []
-    forces = [] if args.include_forces else None
-    stresses = [] if args.include_stresses else None
+    # energies = []
+    # forces = [] if args.include_forces else None
+    # stresses = [] if args.include_stresses else None
+    # logger.info("Processing training datasets...")
+    # for atoms in atoms_train:
+    #     energies.append(atoms.get_potential_energy())
+    #     if args.include_forces:
+    #         forces.append(atoms.get_forces())
+    #     if args.include_stresses:
+    #         stresses.append(atoms.get_stress(voigt=False) / GPa)  # convert to GPa
+
     logger.info("Processing training datasets...")
-    for atoms in atoms_train:
-        energies.append(atoms.get_potential_energy())
-        if args.include_forces:
-            forces.append(atoms.get_forces())
-        if args.include_stresses:
-            stresses.append(atoms.get_stress(voigt=False) / GPa)  # convert to GPa
+    results = Parallel(n_jobs=8)(
+        delayed(get_properties)(atoms, args.include_forces, args.include_stresses)
+        for atoms in tqdm(atoms_train, desc="Preprocessing train data")
+    )
+    
+    _energies, _forces, _stresses = zip(*results)
+    energies = list(_energies)
+    forces = list(_forces) if args.include_forces else None
+    stresses = list(_stresses) if args.include_stresses else None
 
     logger.info("Building training dataloader...")
     dataloader = build_dataloader(
@@ -90,7 +109,6 @@ def main(args):
         shuffle=True,
         pin_memory=(args.device == "cuda"),
         is_distributed=args.distributed,
-        multiprocessing=0,
         **args_dict,
     )
 
@@ -186,6 +204,9 @@ if __name__ == "__main__":
     # path parameters
     parser.add_argument(
         "--distributed", action="store_true", help="Whether to use distributed training"
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=4, help="number of workers for data loader"
     )
     parser.add_argument(
         "--train_data_path", type=str, default="./sample.xyz", help="train data path"
