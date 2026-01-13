@@ -11,50 +11,105 @@ from torch.utils.data import Dataset
 from mattersim.datasets.utils.convertor import GraphConvertor
 from mattersim.utils.logger_utils import get_logger
 from tqdm import tqdm
+from ase.units import GPa
+
+import lmdb
+import pickle
 
 logger = get_logger()
 
-class LazyM3GNetDataset(Dataset):
-    def __init__(self, atoms, energies, forces, stresses, convertor, **kwargs):
-        self.atoms = atoms
-        self.energies = energies
-        self.forces = forces
-        self.stresses = stresses
+# class LazyM3GNetDataset(Dataset):
+#     def __init__(self, atoms, energies, forces, stresses, convertor, **kwargs):
+#         self.atoms = atoms
+#         self.energies = energies
+#         self.forces = forces
+#         self.stresses = stresses
+#         self.convertor = convertor
+#         self.kwargs = kwargs
+
+#     def __len__(self):
+#         return len(self.atoms)
+
+#     def __getitem__(self, idx):
+#         # Convert the graph on-the-fly only when requested
+#         # We copy() to ensure thread safety if num_workers > 0
+#         graph = self.convertor.convert(
+#             self.atoms[idx].copy(),
+#             self.energies[idx],
+#             self.forces[idx],
+#             self.stresses[idx],
+#             **self.kwargs
+#         )
+#         return graph
+
+class LazyLMDBDataset(Dataset):
+    def __init__(self, 
+                 lmdb_path, 
+                 convertor, 
+                 **kwargs):
+        self.lmdb_path = lmdb_path
         self.convertor = convertor
         self.kwargs = kwargs
+        
+        # Read length from metadata
+        env = lmdb.open(
+            lmdb_path, 
+            subdir=False, 
+            readonly=True, 
+            lock=False, 
+            readahead=False, 
+            meminit=False
+        )
+        with env.begin() as txn:
+            self.length = int(txn.get(b"length").decode("ascii"))
+        env.close()
+        super().__init__()
 
     def __len__(self):
-        return len(self.atoms)
+        return self.length
 
     def __getitem__(self, idx):
-        # Convert the graph on-the-fly only when requested
-        # We copy() to ensure thread safety if num_workers > 0
+        # Open env here (or reopen per process if worker_init_fn sets it up)
+        # For simplicity, opening per call is safe but slightly slower.
+        # Ideally, cache the env in a thread-local or initialize in worker.
+        env = lmdb.open(
+            self.lmdb_path, 
+            subdir=False, 
+            readonly=True, 
+            lock=False, 
+            readahead=False, 
+            meminit=False
+        )
+        with env.begin() as txn:
+            data = txn.get(f"{idx}".encode("ascii"))
+        env.close()
+        
+        atom = pickle.loads(data)
+        
+        # Extract properties from the atom (assuming SinglePointCalculator)
+        energy = atom.get_potential_energy()
+        force = atom.get_forces()
+        stress = atom.get_stress(voigt=False) / GPa # GPa conversion if needed
+
         graph = self.convertor.convert(
-            self.atoms[idx].copy(),
-            self.energies[idx],
-            self.forces[idx],
-            self.stresses[idx],
+            atom,
+            energy,
+            force,
+            stress,
             **self.kwargs
         )
         return graph
 
 def build_dataloader(
-    atoms: list[Atoms] = None,
-    energies: list[float] = None,
-    forces: list[np.ndarray] = None,
-    stresses: list[np.ndarray] = None,
+    data_path: str,
     cutoff: float = 5.0,
     threebody_cutoff: float = 4.0,
     batch_size: int = 64,
     model_type: str = "m3gnet",
     shuffle=False,
-    only_inference: bool = False,
     num_workers: int = 0,
     pin_memory: bool = False,
-    multiprocessing: int = 0,
-    multithreading: int = 0,
     dataset=None,
-    finetune_task_label: list = None,
     **kwargs,
 ):
     """
@@ -75,83 +130,23 @@ def build_dataloader(
     logger.info("Create GraphConvertor")
     convertor = GraphConvertor(model_type, cutoff, True, threebody_cutoff)
 
-    preprocessed_data = []
+    logger.info("Create LazyM3GNetDataset")
+    
+    dataset = LazyLMDBDataset(
+        lmdb_path=data_path,
+        convertor=convertor,
+        **kwargs
+    )
 
-    if dataset is None:
-        if not only_inference:
-            assert (
-                energies is not None
-            ), "energies must be provided if only_inference is False"
-        if stresses is not None:
-            assert np.array(stresses[0]).shape == (
-                3,
-                3,
-            ), "stresses must be a list of 3x3 matrices"
+    logger.info("Create DataLoader_pyg")
+    return DataLoader_pyg(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
 
-        length = len(atoms)
-        if energies is None:
-            energies = [None] * length
-        if forces is None:
-            forces = [None] * length
-        if stresses is None:
-            stresses = [None] * length
-
-    if model_type == "m3gnet":
-        
-        # if multiprocessing == 0 and multithreading == 0:
-        #     # start = time.time()
-        #     for graph, energy, force, stress in zip(atoms, energies, forces, stresses):
-        #         graph = convertor.convert(graph.copy(), energy, force, stress, **kwargs)
-        #         if graph is not None:
-        #             preprocessed_data.append(graph)
-        #     # logger.info("Data preprocessing time: {:.2f} s".format(time.time() - start))
-        # elif multithreading > 0 and multiprocessing == 0:
-        #     from multiprocessing.pool import ThreadPool
-
-        #     warnings.warn("multithreading is experimental")
-        #     warnings.warn("it may not be faster than single thread due to GIL.")
-        #     logger.info("Using multithreading with {} threads".format(multithreading))
-        #     start = time.time()
-        #     pool = ThreadPool(processes=multithreading)
-        #     preprocessed_data = pool.starmap(
-        #         convertor.convert, zip(atoms, energies, forces, stresses)
-        #     )
-        #     pool.close()
-        #     logger.info("Time elapsed: {:.2f} s".format(time.time() - start))
-        # elif multiprocessing > 0 and multithreading == 0:
-        #     # use joblib to implement multiprocessing
-        #     from joblib import Parallel, delayed
-        #     logger.info("Using multiprocessing with {} workers".format(multiprocessing))
-        #     start = time.time()
-        #     results = Parallel(n_jobs=multiprocessing)(
-        #         delayed(multiprocess_data)(atoms[int(i * length / multiprocessing): int((i + 1) * length / multiprocessing)], 1)
-        #         for i in range(multiprocessing)
-        #     )
-        #     logger.info("Collecting results")
-        #     for result in results:
-        #         for graph in result:
-        #             if graph is not None:
-        #                 preprocessed_data.append(graph)
-        #     logger.info("Time for multiprocessing: {:.2f} s".format(time.time() - start))
-        # else:
-        #     raise NotImplementedError
-
-        logger.info("Create LazyM3GNetDataset")
-        dataset = LazyM3GNetDataset(
-            atoms, energies, forces, stresses, convertor, **kwargs
-        )
-
-        logger.info("Create DataLoader_pyg")
-        return DataLoader_pyg(
-            dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-        )
-
-    elif model_type == "graphormer" or model_type == "geomformer":
-        raise NotImplementedError
 
 
 def multiprocess_data(atoms: list[Atoms], number):
