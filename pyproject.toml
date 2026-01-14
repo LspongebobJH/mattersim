@@ -52,6 +52,7 @@ dependencies = [
     "torchmetrics>=0.10.0",
     "torchvision>=0.17.0",
     "wandb",
+    "fairchem-core>=1.10.0"
 ]
 
 [project.optional-dependencies]

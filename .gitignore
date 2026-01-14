@@ -164,3 +164,4 @@ cython_debug/
 
 # misc
 results/
+=1.*

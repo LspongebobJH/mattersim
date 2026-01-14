@@ -536,6 +536,9 @@ class Potential(nn.Module):
         log=True,
         **kwargs,
     ):
+        if mode == "train" and is_distributed:
+            dataloader.sampler.set_epoch(epoch)
+
         start_time = time.time()
         loss_avg = MeanMetric().to(self.device)
         train_e_mae = MeanMetric().to(self.device)
@@ -633,6 +636,9 @@ class Potential(nn.Module):
                 train_f_mae.update(f_mae.detach())
             if include_stresses:
                 train_s_mae.update(s_mae.detach())
+
+            # jiahang: debug
+            break
 
         loss_avg_ = loss_avg.compute().item()
         if include_energy:

@@ -7,7 +7,8 @@ import torch
 from ase import Atoms
 from torch_geometric.loader import DataLoader as DataLoader_pyg
 from torch.utils.data import Dataset
-
+from fairchem.core.common import distutils
+from fairchem.core.common.data_parallel import BalancedBatchSampler
 from mattersim.datasets.utils.convertor import GraphConvertor
 from mattersim.utils.logger_utils import get_logger
 from tqdm import tqdm
@@ -110,7 +111,10 @@ def build_dataloader(
     num_workers: int = 0,
     pin_memory: bool = False,
     dataset=None,
-    **kwargs,
+    drop_last=False,
+    seed=42,
+    is_distributed=False,
+    args_dict=None,
 ):
     """
     Build a dataloader given a list of atoms
@@ -135,16 +139,39 @@ def build_dataloader(
     dataset = LazyLMDBDataset(
         lmdb_path=data_path,
         convertor=convertor,
-        **kwargs
+        **args_dict
     )
+
+    if is_distributed:
+        num_replicas = distutils.get_world_size()
+        rank = distutils.get_rank()
+
+        sampler = BalancedBatchSampler(
+            dataset,
+            batch_size=batch_size,
+            num_replicas=num_replicas,
+            rank=rank,
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+            mode="atoms",
+            shuffle=shuffle,
+            on_error="raise",
+            seed=seed,
+            drop_last=drop_last,
+        )
+
+    else:
+        sampler = None
+        
 
     logger.info("Create DataLoader_pyg")
     return DataLoader_pyg(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if sampler is None else False,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        persistent_workers=True,
+        sampler=sampler,
     )
 
 
