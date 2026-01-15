@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 import time
 import warnings
-
+from functools import partial
 import numpy as np
 import torch
 from ase import Atoms
 from torch_geometric.loader import DataLoader as DataLoader_pyg
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
+from fairchem.core.datasets import AseDBDataset
 from fairchem.core.common import distutils
 from fairchem.core.common.data_parallel import BalancedBatchSampler
+from fairchem.core.datasets import data_list_collater
 from mattersim.datasets.utils.convertor import GraphConvertor
 from mattersim.utils.logger_utils import get_logger
 from tqdm import tqdm
@@ -42,7 +44,41 @@ logger = get_logger()
 #             **self.kwargs
 #         )
 #         return graph
+class AseDBDatasetCustomized(AseDBDataset):
+    def __init__(self, 
+                 model_type,
+                 twobody_cutoff,
+                 threebody_cutoff,
+                 config):
+        super().__init__(config)
+        self.convertor = GraphConvertor(
+            model_type=model_type, 
+            twobody_cutoff=twobody_cutoff, 
+            has_threebody=True, 
+            threebody_cutoff=threebody_cutoff
+        )
+    
+    def __getitem__(self, idx):
+        ########## adapted from AseAtomsDataset ##########
+        # Handle slicing
+        if isinstance(idx, slice):
+            return [self[i] for i in range(*idx.indices(len(self)))]
 
+        # Get atoms object via derived class method
+        atoms = self.get_atoms(idx)
+        ########## adapted from AseAtomsDataset ##########
+        
+        energy = atoms.get_potential_energy()
+        force = atoms.get_forces()
+        stress = atoms.get_stress(voigt=False) / GPa
+
+        graph = self.convertor.convert(
+            atoms,
+            energy,
+            force,
+            stress,
+        )
+        return graph
 class LazyLMDBDataset(Dataset):
     def __init__(self, 
                  lmdb_path, 
@@ -132,15 +168,42 @@ def build_dataloader(
                     only used for graphormer and geomformer
     """
     logger.info("Create GraphConvertor")
-    convertor = GraphConvertor(model_type, cutoff, True, threebody_cutoff)
+    # convertor = GraphConvertor(model_type, cutoff, True, threebody_cutoff)
 
     logger.info("Create LazyM3GNetDataset")
     
-    dataset = LazyLMDBDataset(
-        lmdb_path=data_path,
-        convertor=convertor,
-        **args_dict
+    # dataset = LazyLMDBDataset(
+    #     lmdb_path=data_path,
+    #     convertor=convertor,
+    #     **args_dict
+    # )
+    # dataset = AseDBDataset(
+    dataset = AseDBDatasetCustomized(
+        model_type=model_type,
+        twobody_cutoff=cutoff,
+        threebody_cutoff=threebody_cutoff,
+        config={
+            "src": [data_path],
+            "a2g_args": {
+                "r_energy":True, 
+                "r_forces":True, 
+                "r_stress":True,
+                "r_edges": True,
+            }
+        }
     )
+    # sampler = BalancedBatchSampler(
+    #         dataset,
+    #         batch_size=batch_size,
+    #         num_replicas=1,
+    #         rank=0,
+    #         device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+    #         mode="atoms",
+    #         shuffle=shuffle,
+    #         on_error="raise",
+    #         seed=seed,
+    #         drop_last=drop_last,
+    #     )
 
     if is_distributed:
         num_replicas = distutils.get_world_size()
@@ -164,15 +227,23 @@ def build_dataloader(
         
 
     logger.info("Create DataLoader_pyg")
+
+    # return DataLoader(
+    #     dataset,
+    #     collate_fn=partial(data_list_collater, otf_graph=False),
+    #     num_workers=num_workers,
+    #     pin_memory=pin_memory,
+    #     persistent_workers=True,
+    #     batch_sampler=sampler,
+    # )
     return DataLoader_pyg(
         dataset,
-        batch_size=batch_size,
-        shuffle=shuffle if sampler is None else False,
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=True,
-        sampler=sampler,
+        batch_sampler=sampler,
     )
+
 
 
 
