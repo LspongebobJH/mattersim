@@ -644,9 +644,6 @@ class Potential(nn.Module):
             if include_stresses:
                 train_s_mae.update(s_mae.detach())
 
-            # jiahang: debug!
-            break
-
 
         loss_avg_ = loss_avg.compute().item()
         if include_energy:
