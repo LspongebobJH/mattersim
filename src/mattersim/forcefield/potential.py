@@ -48,6 +48,7 @@ class Potential(nn.Module):
         ema=None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         allow_tf32=False,
+        min_lr=None,
         **kwargs,
     ):
         """
@@ -58,6 +59,7 @@ class Potential(nn.Module):
             normalizer : an energy normalization module
         """
         super().__init__()
+        self.min_lr = min_lr
         self.model = model
         if optimizer is None:
             self.optimizer = Adam(
@@ -320,10 +322,15 @@ class Potential(nn.Module):
                     **kwargs,
                 )
 
-            if isinstance(self.scheduler, ReduceLROnPlateau):
-                self.scheduler.step(metric)
+            latest_lr = self.scheduler.get_last_lr()[0]
+            if self.min_lr is not None and latest_lr >= self.min_lr:
+                if isinstance(self.scheduler, ReduceLROnPlateau):
+                    self.scheduler.step(metric)
+                else:
+                    self.scheduler.step()
+                logger.info(f"Update LR from {latest_lr} to {self.scheduler.get_last_lr()[0]}")
             else:
-                self.scheduler.step()
+                logger.info(f"Current LR {latest_lr} reaches the minimum LR {self.min_lr}. Stop updating LR.")
 
             self.last_epoch = epoch
 
@@ -537,7 +544,7 @@ class Potential(nn.Module):
         **kwargs,
     ):
         if mode == "train" and is_distributed:
-            dataloader.sampler.set_epoch(epoch)
+            dataloader.batch_sampler.set_epoch(epoch)
 
         start_time = time.time()
         loss_avg = MeanMetric().to(self.device)
@@ -637,8 +644,9 @@ class Potential(nn.Module):
             if include_stresses:
                 train_s_mae.update(s_mae.detach())
 
-            # jiahang: debug
+            # jiahang: debug!
             break
+
 
         loss_avg_ = loss_avg.compute().item()
         if include_energy:
