@@ -49,6 +49,7 @@ class Potential(nn.Module):
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         allow_tf32=False,
         min_lr=None,
+        min_diff=0.0,
         **kwargs,
     ):
         """
@@ -60,6 +61,7 @@ class Potential(nn.Module):
         """
         super().__init__()
         self.min_lr = min_lr
+        self.min_diff = min_diff
         self.model = model
         if optimizer is None:
             self.optimizer = Adam(
@@ -391,7 +393,7 @@ class Potential(nn.Module):
 
                 if (
                     save_checkpoint is True
-                    and metric[self.idx]
+                    and (metric[self.idx] + self.min_diff)
                     < best_model["validation_metrics"][
                         self.saved_name[self.idx]
                     ]  # noqa: E501
@@ -440,7 +442,7 @@ class Potential(nn.Module):
                 logger.info("Early stopping")
                 return True
 
-            if metric[self.idx] < self.best_metric:
+            if (metric[self.idx] + self.min_diff) < self.best_metric:
                 self.best_metric = metric[self.idx]
                 self.best_metric_epoch = epoch
                 if save_checkpoint and self.rank == 0:
