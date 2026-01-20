@@ -107,13 +107,17 @@ class Potential(nn.Module):
         self.description = kwargs.get("description", "")
         self.saved_name = ["loss", "MAE_energy", "MAE_force", "MAE_stress"]
         self.best_metric = 10000
-        self.best_metric_epoch = 0
+        
+        if self.last_epoch == -1:
+            self.best_metric_epoch = 0
+        else:
+            self.best_metric_epoch = self.last_epoch
         self.rank = None
 
         self.use_finetune_label_loss = kwargs.get("use_finetune_label_loss", False)
-        self.global_step = 0
+        # self.global_step = 0
 
-    def freeze_reset_model( # jiahang: reference
+    def freeze_reset_model( # jiahang: useless, but worth reference
         self,
         finetune_layers: int = -1,
         reset_head_for_finetune: bool = False,
@@ -160,7 +164,7 @@ class Potential(nn.Module):
                 "finetune_layers should be -1 or a positive integer,and less than the number of layers"  # noqa: E501
             )
 
-    def finetune_mode(
+    def finetune_mode( # jiahang: useless, but worth reference
         self,
         finetune_layers: int = -1,
         finetune_head: nn.Module = None,
@@ -592,8 +596,8 @@ class Potential(nn.Module):
                 loss_s,
             )
 
-            if mode == 'train':
-                self.global_step += 1
+            # if mode == 'train':
+            #     self.global_step += 1
 
             if batch_idx % 10 == 0 and mode == 'train':
                 if log:
@@ -687,7 +691,7 @@ class Potential(nn.Module):
                     f"{mode}/mae_tot_epoch": e_mae + f_mae + s_mae,
                     f"{mode}/epoch": epoch,
                 },
-                step=self.global_step,
+                # step=self.global_step,
             )
 
         return (loss_avg_, e_mae, f_mae, s_mae)
@@ -950,22 +954,30 @@ class Potential(nn.Module):
         model.load_state_dict(checkpoint["model"], strict=False)
 
         if load_training_state:
+            reset_optim_scheduler = kwargs.get("continue_train_reset_optimizer_scheduler", False)
             optimizer = Adam(model.parameters())
             scheduler = StepLR(optimizer, step_size=10, gamma=0.95)
-            try:
-                optimizer.load_state_dict(checkpoint["optimizer"])
-            except BaseException:
+            if reset_optim_scheduler:
+                optimizer = None
+            else:
                 try:
-                    optimizer.load_state_dict(checkpoint["optimizer"].state_dict())
+                    optimizer.load_state_dict(checkpoint["optimizer"])
                 except BaseException:
-                    optimizer = None
-            try:
-                scheduler.load_state_dict(checkpoint["scheduler"])
-            except BaseException:
+                    try:
+                        optimizer.load_state_dict(checkpoint["optimizer"].state_dict())
+                    except BaseException:
+                        optimizer = None
+
+            if reset_optim_scheduler:
+                scheduler = "StepLR"
+            else:
                 try:
-                    scheduler.load_state_dict(checkpoint["scheduler"].state_dict())
+                    scheduler.load_state_dict(checkpoint["scheduler"])
                 except BaseException:
-                    scheduler = "StepLR"
+                    try:
+                        scheduler.load_state_dict(checkpoint["scheduler"].state_dict())
+                    except BaseException:
+                        scheduler = "StepLR"
             try:
                 last_epoch = checkpoint["last_epoch"]
                 validation_metrics = checkpoint["validation_metrics"]

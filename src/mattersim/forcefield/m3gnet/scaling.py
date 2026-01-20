@@ -12,6 +12,7 @@ from ase import Atoms
 from torch_runstats.scatter import scatter_mean
 
 from mattersim.datasets.utils.regressor import solver
+from tqdm import tqdm
 
 DATA_INDEX = {
     "total_energy": 0,
@@ -220,19 +221,29 @@ class AtomScaling(nn.Module):
             if "per_species" in key:
                 n_atoms = torch.repeat_interleave(repeats=num_atoms)
                 if "linear_reg" in key:
+                    # features = bincount(
+                    #     atomic_numbers, n_atoms, minlength=self.max_z + 1
+                    # ).numpy()
+                    # # print(features[0], features.shape)
+                    # data = data.numpy()
+                    # assert features.ndim == 2  # [batch, n_type]
+                    # features = features[
+                    #     (features > 0).any(axis=1)
+                    # ]  # deal with non-contiguous batch indexes
+                    # statistics = np.linalg.pinv(features.T.dot(features)).dot(
+                    #     features.T.dot(data)
+                    # )
+                    # statistics = torch.from_numpy(statistics)
+
+                    # try implementing these codes in torch, running on GPU, get it faster on large features and data
                     features = bincount(
                         atomic_numbers, n_atoms, minlength=self.max_z + 1
-                    ).numpy()
-                    # print(features[0], features.shape)
-                    data = data.numpy()
+                    ).to(data.dtype)
                     assert features.ndim == 2  # [batch, n_type]
-                    features = features[
-                        (features > 0).any(axis=1)
-                    ]  # deal with non-contiguous batch indexes
-                    statistics = np.linalg.pinv(features.T.dot(features)).dot(
-                        features.T.dot(data)
-                    )
-                    statistics = torch.from_numpy(statistics)
+                    # deal with non-contiguous batch indexes
+                    features = features[(features > 0).any(dim=1)]
+                    statistics = torch.linalg.lstsq(features, data).solution # this is faster than pinv version
+                    
                 else:
                     N = bincount(
                         atomic_numbers,
