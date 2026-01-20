@@ -18,6 +18,7 @@ from ase.units import GPa
 
 import lmdb
 import pickle
+import glob, os, bisect, re
 
 logger = get_logger()
 
@@ -57,6 +58,65 @@ class AseDBDatasetCustomized(AseDBDataset):
             has_threebody=True, 
             threebody_cutoff=threebody_cutoff
         )
+
+    def _load_dataset_get_ids(self, config: dict) -> list[int]:
+        if isinstance(config["src"], list):
+            filepaths = []
+            for path in sorted(config["src"]):
+                if os.path.isdir(path):
+                    filepaths.extend(sorted(glob(f"{path}/*")))
+                elif os.path.isfile(path):
+                    filepaths.append(path)
+                elif "*" in path or "?" in path:
+                    filepaths = sorted(
+                        glob.glob(path),
+                        key=lambda p: int(re.search(r"part_(\d+)", p).group(1))
+                    )
+                else:
+                    raise RuntimeError(f"Error reading dataset in {path}!")
+        elif os.path.isfile(config["src"]):
+            filepaths = [config["src"]]
+        elif os.path.isdir(config["src"]):
+            filepaths = sorted(glob(f'{config["src"]}/*'))
+        else:
+            filepaths = sorted(glob(config["src"]))
+
+        self.dbs = []
+
+        for path in filepaths:
+            try:
+                self.dbs.append(
+                    self.connect_db(
+                        path,
+                        config.get("connect_args", {}),
+                    )
+                )
+            except ValueError:
+                logging.debug(
+                    f"Tried to connect to {path} but it's not an ASE database!"
+                )
+
+        self.select_args = config.get("select_args", {})
+        if self.select_args is None:
+            self.select_args = {}
+
+        # In order to get all of the unique IDs using the default ASE db interface
+        # we have to load all the data and check ids using a select. This is extremely
+        # inefficient for large dataset. If the db we're using already presents a list of
+        # ids and there is no query, we can just use that list instead and save ourselves
+        # a lot of time!
+        self.db_ids = []
+        for db in self.dbs:
+            if hasattr(db, "ids") and self.select_args == {}:
+                self.db_ids.append(db.ids)
+            else:
+                # this is the slow alternative
+                self.db_ids.append([row.id for row in db.select(**self.select_args)])
+
+        idlens = [len(ids) for ids in self.db_ids]
+        self._idlen_cumulative = np.cumsum(idlens).tolist()
+
+        return list(range(sum(idlens)))
     
     def __getitem__(self, idx):
         ########## adapted from AseAtomsDataset ##########
@@ -79,6 +139,29 @@ class AseDBDatasetCustomized(AseDBDataset):
             stress,
         )
         return graph
+    
+    def __getitem__(self, idx):
+        ########## adapted from AseAtomsDataset ##########
+        # Handle slicing
+        if isinstance(idx, slice):
+            return [self[i] for i in range(*idx.indices(len(self)))]
+
+        # Get atoms object via derived class method
+        atoms = self.get_atoms(idx)
+        ########## adapted from AseAtomsDataset ##########
+        
+        energy = atoms.get_potential_energy()
+        force = atoms.get_forces()
+        stress = atoms.get_stress(voigt=False) / GPa
+
+        graph = self.convertor.convert(
+            atoms,
+            energy,
+            force,
+            stress,
+        )
+        return graph
+
 class LazyLMDBDataset(Dataset):
     def __init__(self, 
                  lmdb_path, 
@@ -150,6 +233,7 @@ def build_dataloader(
     drop_last=False,
     seed=42,
     is_distributed=False,
+    metadata_path=None,
     args_dict=None,
 ):
     """
@@ -189,7 +273,8 @@ def build_dataloader(
                 "r_forces":True, 
                 "r_stress":True,
                 "r_edges": True,
-            }
+            },
+            "metadata_path": metadata_path,
         }
     )
     # sampler = BalancedBatchSampler(
