@@ -4,15 +4,16 @@ from typing import Dict, List, Union
 
 from ase import Atoms, units
 from ase.calculators.calculator import Calculator
-from ase.constraints import Filter
+from ase.filters import Filter
 from ase.filters import ExpCellFilter, FrechetCellFilter
 from ase.optimize import BFGS, FIRE
 from ase.optimize.optimize import Optimizer
 from loguru import logger
 from tqdm import tqdm
 
-from mattersim.datasets.utils.build import build_dataloader
+from mattersim.datasets.utils.build import build_dataloader, build_dataloader_from_atom_list
 from mattersim.forcefield.potential import Potential
+import torch
 
 
 class DummyBatchCalculator(Calculator):
@@ -77,6 +78,7 @@ class BatchRelaxer(object):
         self.total_converged = 0
         self.trajectories: Dict[int, List[Atoms]] = {}
         self.max_n_steps = max_n_steps 
+        self.final_atoms = {}
 
     def insert(self, atoms: Atoms):
         atoms.calc = DummyBatchCalculator()
@@ -96,8 +98,12 @@ class BatchRelaxer(object):
 
         # Note: we use a batch size of len(atoms_list)
         # because we only want to run one batch at a time
-        dataloader = build_dataloader(
-            atoms_list, batch_size=len(atoms_list), only_inference=True
+        dataloader = build_dataloader_from_atom_list(
+            atoms_list, 
+            cutoff=self.potential.model.model_args["cutoff"],
+            threebody_cutoff=self.potential.model.model_args["threebody_cutoff"],
+            batch_size=len(atoms_list), 
+            only_inference=True
         )
         energy_batch, forces_batch, stress_batch = self.potential.predict_properties(
             dataloader, include_forces=True, include_stresses=True
@@ -123,11 +129,20 @@ class BatchRelaxer(object):
 
                 opt.step()
                 opt.nsteps += 1
-                if opt.converged() or opt.nsteps >= self.max_n_steps:
+                converged = opt.converged(opt.optimizable.get_gradient())
+                over_max_steps = opt.nsteps >= self.max_n_steps
+                if converged or over_max_steps:
                     self.is_active_instance[idx] = False
                     self.total_converged += 1
                     if self.total_converged % 100 == 0:
                         logger.info(f"Relaxed {self.total_converged} structures.")
+                    self.final_atoms[opt.atoms.info["structure_index"]] = opt.atoms.copy()
+                    if converged and over_max_steps:
+                        raise RuntimeError("This should not happen when both converged and over_max_steps.")
+                    if converged:
+                        self.final_atoms[opt.atoms.info["structure_index"]].info["converged"] = True
+                    elif over_max_steps:
+                        self.final_atoms[opt.atoms.info["structure_index"]].info["converged"] = False
                 else:
                     self.finished = False
                 counter += 1
@@ -139,6 +154,7 @@ class BatchRelaxer(object):
             if active
         ]
         self.is_active_instance = [True] * len(self.optimizer_instances)
+        torch.cuda.empty_cache()
 
     def relax(
         self,
@@ -169,5 +185,8 @@ class BatchRelaxer(object):
                 pointer += 1
             self.step_batch()
         self.tqdmcounter.close()
+
+        assert len(self.final_atoms) == len(atoms_list) == len(self.trajectories)
+        self.final_atoms = dict(sorted(self.final_atoms.items()))
 
         return self.trajectories
