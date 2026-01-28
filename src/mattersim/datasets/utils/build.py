@@ -18,39 +18,19 @@ from ase.units import GPa
 
 import lmdb
 import pickle
-import glob, os, bisect, re
-
+import os, bisect, re
+from glob import glob
 logger = get_logger()
 
-# class LazyM3GNetDataset(Dataset):
-#     def __init__(self, atoms, energies, forces, stresses, convertor, **kwargs):
-#         self.atoms = atoms
-#         self.energies = energies
-#         self.forces = forces
-#         self.stresses = stresses
-#         self.convertor = convertor
-#         self.kwargs = kwargs
-
-#     def __len__(self):
-#         return len(self.atoms)
-
-#     def __getitem__(self, idx):
-#         # Convert the graph on-the-fly only when requested
-#         # We copy() to ensure thread safety if num_workers > 0
-#         graph = self.convertor.convert(
-#             self.atoms[idx].copy(),
-#             self.energies[idx],
-#             self.forces[idx],
-#             self.stresses[idx],
-#             **self.kwargs
-#         )
-#         return graph
 class AseDBDatasetCustomized(AseDBDataset):
     def __init__(self, 
                  model_type,
                  twobody_cutoff,
                  threebody_cutoff,
-                 config):
+                 config,
+                 combined=False # if combined, then we use dataset omat_compressed+mptrj
+                 ):
+        self.combined = combined
         super().__init__(config)
         self.convertor = GraphConvertor(
             model_type=model_type, 
@@ -60,29 +40,43 @@ class AseDBDatasetCustomized(AseDBDataset):
         )
 
     def _load_dataset_get_ids(self, config: dict) -> list[int]:
-        if isinstance(config["src"], list):
-            filepaths = []
-            for path in sorted(config["src"]):
-                if os.path.isdir(path):
-                    filepaths.extend(sorted(glob(f"{path}/*")))
-                elif os.path.isfile(path):
-                    filepaths.append(path)
-                elif "*" in path or "?" in path:
-                    filepaths = sorted(
-                        glob.glob(path),
-                        key=lambda p: int(re.search(r"part_(\d+)", p).group(1))
-                    )
-                else:
-                    raise RuntimeError(f"Error reading dataset in {path}!")
-        elif os.path.isfile(config["src"]):
-            filepaths = [config["src"]]
-        elif os.path.isdir(config["src"]):
-            filepaths = sorted(glob(f'{config["src"]}/*'))
+        if self.combined:
+            src = config["src"][0]
+            filepaths = glob(src)
+            mptrj_file = [fp for fp in filepaths if "mptrj" in os.path.basename(fp)]
+            assert len(mptrj_file) == 1, "only support 1 mptrj file"
+            mptrj_file = mptrj_file[0]
+            filepaths = sorted([fp for fp in filepaths if "omat24" in os.path.basename(fp)], 
+                               key=lambda p: int(re.search(r"part_(\d+)", p).group(1)))
+            filepaths.append(mptrj_file)
         else:
-            filepaths = sorted(glob(config["src"]))
+            if isinstance(config["src"], list):
+                filepaths = []
+                for path in sorted(config["src"]):
+                    if os.path.isdir(path):
+                        filepaths.extend(sorted(glob(f"{path}/*")))
+                    elif os.path.isfile(path):
+                        filepaths.append(path)
+                    elif "*" in path or "?" in path:
+                        filepaths = sorted(
+                            glob.glob(path),
+                            key=lambda p: int(re.search(r"part_(\d+)", p).group(1))
+                        )
+                    else:
+                        raise RuntimeError(f"Error reading dataset in {path}!")
+            elif os.path.isfile(config["src"]):
+                filepaths = [config["src"]]
+            elif os.path.isdir(config["src"]):
+                filepaths = sorted(glob(f'{config["src"]}/*'))
+            else:
+                filepaths = sorted(glob(config["src"]))
 
         self.dbs = []
 
+        # we first load omat data then mptrj data. we need to
+        # keep this order to make sure loaded data are aligned with metadata and EFS.
+        # Be noted that the correct order is omat first then mptrj.
+        
         for path in filepaths:
             try:
                 self.dbs.append(
@@ -92,7 +86,7 @@ class AseDBDatasetCustomized(AseDBDataset):
                     )
                 )
             except ValueError:
-                logging.debug(
+                logger.debug(
                     f"Tried to connect to {path} but it's not an ASE database!"
                 )
 
@@ -139,88 +133,107 @@ class AseDBDatasetCustomized(AseDBDataset):
             stress,
         )
         return graph
-    
-    def __getitem__(self, idx):
-        ########## adapted from AseAtomsDataset ##########
-        # Handle slicing
-        if isinstance(idx, slice):
-            return [self[i] for i in range(*idx.indices(len(self)))]
 
-        # Get atoms object via derived class method
-        atoms = self.get_atoms(idx)
-        ########## adapted from AseAtomsDataset ##########
-        
-        energy = atoms.get_potential_energy()
-        force = atoms.get_forces()
-        stress = atoms.get_stress(voigt=False) / GPa
+def build_dataloader_from_atom_list(
+    atoms: list[Atoms] = None,
+    energies: list[float] = None,
+    forces: list[np.ndarray] = None,
+    stresses: list[np.ndarray] = None,
+    cutoff: float = 5.0,
+    threebody_cutoff: float = 4.0,
+    batch_size: int = 64,
+    model_type: str = "m3gnet",
+    shuffle=False,
+    only_inference: bool = False,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+    multiprocessing: int = 0,
+    multithreading: int = 0,
+    dataset=None,
+    finetune_task_label: list = None,
+    **kwargs,
+):
+    convertor = GraphConvertor(model_type, cutoff, True, threebody_cutoff)
+    preprocessed_data = []
 
-        graph = self.convertor.convert(
-            atoms,
-            energy,
-            force,
-            stress,
+    if dataset is None:
+        if not only_inference:
+            assert (
+                energies is not None
+            ), "energies must be provided if only_inference is False"
+        if stresses is not None:
+            assert np.array(stresses[0]).shape == (
+                3,
+                3,
+            ), "stresses must be a list of 3x3 matrices"
+
+        length = len(atoms)
+        if energies is None:
+            energies = [None] * length
+        if forces is None:
+            forces = [None] * length
+        if stresses is None:
+            stresses = [None] * length
+
+    if model_type == "m3gnet":
+        if multiprocessing == 0 and multithreading == 0:
+            # start = time.time()
+            for graph, energy, force, stress in zip(atoms, energies, forces, stresses):
+                graph = convertor.convert(graph.copy(), energy, force, stress, **kwargs)
+                if graph is not None:
+                    preprocessed_data.append(graph)
+            # print("Data preprocessing time: {:.2f} s".format(time.time() - start))
+        elif multithreading > 0 and multiprocessing == 0:
+            from multiprocessing.pool import ThreadPool
+
+            warnings.warn("multithreading is experimental")
+            warnings.warn("it may not be faster than single thread due to GIL.")
+            print("Using multithreading with {} threads".format(multithreading))
+            start = time.time()
+            pool = ThreadPool(processes=multithreading)
+            preprocessed_data = pool.starmap(
+                convertor.convert, zip(atoms, energies, forces, stresses)
+            )
+            pool.close()
+            print("Time elapsed: {:.2f} s".format(time.time() - start))
+        elif multiprocessing > 0 and multithreading == 0:
+            import multiprocessing as mp
+
+            warnings.warn("multiprocessing is experimental.")
+            print("Using multiprocessing with {} workers".format(multiprocessing))
+            # torch.multiprocessing.set_sharing_strategy('file_system')
+            start = time.time()
+            pool = mp.Pool(multiprocessing)
+            results = []
+            for i in range(multiprocessing):
+                left = int(i * length / multiprocessing)
+                right = int((i + 1) * length / multiprocessing)
+                results.append(
+                    pool.apply_async(multiprocess_data, args=(atoms[left:right], 1))
+                )
+            pool.close()
+            pool.join()
+            for result in results:
+                graph = result.get()
+                if graph is not None:
+                    preprocessed_data.extend(graph)
+            print("Time for multiprocessing: {:.2f} s".format(time.time() - start))
+        else:
+            raise NotImplementedError
+
+        return DataLoader_pyg(
+            preprocessed_data,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
         )
-        return graph
 
-class LazyLMDBDataset(Dataset):
-    def __init__(self, 
-                 lmdb_path, 
-                 convertor, 
-                 **kwargs):
-        self.lmdb_path = lmdb_path
-        self.convertor = convertor
-        self.kwargs = kwargs
-        
-        # Read length from metadata
-        env = lmdb.open(
-            lmdb_path, 
-            subdir=False, 
-            readonly=True, 
-            lock=False, 
-            readahead=False, 
-            meminit=False
-        )
-        with env.begin() as txn:
-            self.length = int(txn.get(b"length").decode("ascii"))
-        env.close()
-        super().__init__()
-
-    def __len__(self):
-        return self.length
-
-    def __getitem__(self, idx):
-        # Open env here (or reopen per process if worker_init_fn sets it up)
-        # For simplicity, opening per call is safe but slightly slower.
-        # Ideally, cache the env in a thread-local or initialize in worker.
-        env = lmdb.open(
-            self.lmdb_path, 
-            subdir=False, 
-            readonly=True, 
-            lock=False, 
-            readahead=False, 
-            meminit=False
-        )
-        with env.begin() as txn:
-            data = txn.get(f"{idx}".encode("ascii"))
-        env.close()
-        
-        atom = pickle.loads(data)
-        
-        # Extract properties from the atom (assuming SinglePointCalculator)
-        energy = atom.get_potential_energy()
-        force = atom.get_forces()
-        stress = atom.get_stress(voigt=False) / GPa # GPa conversion if needed
-
-        graph = self.convertor.convert(
-            atom,
-            energy,
-            force,
-            stress,
-            **self.kwargs
-        )
-        return graph
+    elif model_type == "graphormer" or model_type == "geomformer":
+        raise NotImplementedError
 
 def build_dataloader(
+    combined: bool,
     data_path: str,
     cutoff: float = 5.0,
     threebody_cutoff: float = 4.0,
@@ -234,7 +247,8 @@ def build_dataloader(
     seed=42,
     is_distributed=False,
     metadata_path=None,
-    args_dict=None,
+    # args_dict=None,
+    **kwargs
 ):
     """
     Build a dataloader given a list of atoms
@@ -251,21 +265,13 @@ def build_dataloader(
         - dataset : the dataset object for the dataloader
                     only used for graphormer and geomformer
     """
-    logger.info("Create GraphConvertor")
-    # convertor = GraphConvertor(model_type, cutoff, True, threebody_cutoff)
-
-    logger.info("Create LazyM3GNetDataset")
+    logger.info("Create AseDBDatasetCustomized")
     
-    # dataset = LazyLMDBDataset(
-    #     lmdb_path=data_path,
-    #     convertor=convertor,
-    #     **args_dict
-    # )
-    # dataset = AseDBDataset(
     dataset = AseDBDatasetCustomized(
         model_type=model_type,
         twobody_cutoff=cutoff,
         threebody_cutoff=threebody_cutoff,
+        combined=combined,
         config={
             "src": [data_path],
             "a2g_args": {
@@ -277,18 +283,6 @@ def build_dataloader(
             "metadata_path": metadata_path,
         }
     )
-    # sampler = BalancedBatchSampler(
-    #         dataset,
-    #         batch_size=batch_size,
-    #         num_replicas=1,
-    #         rank=0,
-    #         device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    #         mode="atoms",
-    #         shuffle=shuffle,
-    #         on_error="raise",
-    #         seed=seed,
-    #         drop_last=drop_last,
-    #     )
 
     if is_distributed:
         num_replicas = distutils.get_world_size()
@@ -313,20 +307,16 @@ def build_dataloader(
 
     logger.info("Create DataLoader_pyg")
 
-    # return DataLoader(
-    #     dataset,
-    #     collate_fn=partial(data_list_collater, otf_graph=False),
-    #     num_workers=num_workers,
-    #     pin_memory=pin_memory,
-    #     persistent_workers=True,
-    #     batch_sampler=sampler,
-    # )
     return DataLoader_pyg(
         dataset,
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=True,
         batch_sampler=sampler,
+
+        batch_size=1 if sampler is not None else batch_size,
+        shuffle=False if sampler is not None else shuffle,
+        drop_last=False if sampler is not None else drop_last,
     )
 
 

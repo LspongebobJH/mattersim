@@ -22,13 +22,16 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
 from torch_ema import ExponentialMovingAverage
 from torch_geometric.loader import DataLoader
+from torch_geometric.data import Batch
 from torchmetrics import MeanMetric
 
 from mattersim.datasets.utils.build import build_dataloader
+from mattersim.datasets.utils.convertor import GraphConvertor
 from mattersim.forcefield.m3gnet.m3gnet import M3Gnet
 from mattersim.jit_compile_tools.jit import compile_mode
 from mattersim.utils.download_utils import download_checkpoint
 from mattersim.utils.logger_utils import get_logger
+
 
 rank = int(os.getenv("RANK", 0))
 logger = get_logger()
@@ -599,7 +602,7 @@ class Potential(nn.Module):
             # if mode == 'train':
             #     self.global_step += 1
 
-            if batch_idx % 10 == 0 and mode == 'train':
+            if batch_idx % 10 == 0 and (mode == 'train' or kwargs['eval_only']):
                 if log:
                     logger.info(
                         "%s: Epoch %d, Batch %d / %d, Loss: %.4f, MAE(e): %.4f, MAE(f): %.4f, MAE(s): %.4f"  # noqa: E501
@@ -649,7 +652,6 @@ class Potential(nn.Module):
                 train_f_mae.update(f_mae.detach())
             if include_stresses:
                 train_s_mae.update(s_mae.detach())
-
 
         loss_avg_ = loss_avg.compute().item()
         if include_energy:
@@ -949,7 +951,7 @@ class Potential(nn.Module):
         checkpoint = torch.load(load_path, map_location=device)
 
         assert checkpoint["model_name"] == model_name
-        checkpoint["model_args"].update(kwargs)
+        # checkpoint["model_args"].update(kwargs) # jiahang: attention! we shall not update model architecture args in continue training or evaluation
         model = M3Gnet(device=device, **checkpoint["model_args"]).to(device)
         model.load_state_dict(checkpoint["model"], strict=False)
 
@@ -1296,8 +1298,6 @@ class DeepCalculator(Calculator):
                         result["stresses"].detach().cpu().numpy()[0]
                     )
                 )
-
-
 class MatterSimCalculator(Calculator):
     """
     Deep calculator based on ase Calculator
@@ -1330,6 +1330,12 @@ class MatterSimCalculator(Calculator):
         self.stress_weight = stress_weight
         self.args_dict = args_dict
         self.device = device
+        self.convertor = GraphConvertor(
+            "m3gnet", 
+            self.potential.model.model_args["cutoff"], 
+            True, 
+            self.potential.model.model_args["threebody_cutoff"]
+        )
 
     @classmethod
     def from_checkpoint(cls, load_path: str, **kwargs):
@@ -1402,55 +1408,33 @@ class MatterSimCalculator(Calculator):
             atoms=atoms, properties=properties, system_changes=system_changes
         )
 
-        self.args_dict["batch_size"] = 1
-        self.args_dict["only_inference"] = 1
-        cutoff = (
-            self.potential.model.model_args["cutoff"]
-            if self.potential.model_name == "m3gnet"
-            else 5.0
-        )
-        threebody_cutoff = (
-            self.potential.model.model_args["threebody_cutoff"]
-            if self.potential.model_name == "m3gnet"
-            else 4.0
+        graph = self.convertor.convert(
+            atoms
         )
 
-        dataloader = build_dataloader(
-            [atoms],
-            model_type=self.potential.model_name,
-            cutoff=cutoff,
-            threebody_cutoff=threebody_cutoff,
-            **self.args_dict,
-        )
-        for graph_batch in dataloader:
-            # Resemble input dictionary
-            if (
-                self.potential.model_name == "graphormer"
-                or self.potential.model_name == "geomformer"
-            ):
-                raise NotImplementedError
-            else:
-                graph_batch = graph_batch.to(self.device)
-                input = batch_to_dict(graph_batch)
+        graph_batch = Batch.from_data_list([graph])
+            
+        graph_batch = graph_batch.to(self.device)
+        input = batch_to_dict(graph_batch)
 
-            result = self.potential.forward(
-                input, include_forces=True, include_stresses=self.compute_stress
+        result = self.potential.forward(
+            input, include_forces=True, include_stresses=self.compute_stress
+        )
+        if (
+            self.potential.model_name == "graphormer"
+            or self.potential.model_name == "geomformer"
+        ):
+            raise NotImplementedError
+        else:
+            self.results.update(
+                energy=result["total_energy"].detach().cpu().numpy()[0],
+                free_energy=result["total_energy"].detach().cpu().numpy()[0],
+                forces=result["forces"].detach().cpu().numpy(),
             )
-            if (
-                self.potential.model_name == "graphormer"
-                or self.potential.model_name == "geomformer"
-            ):
-                raise NotImplementedError
-            else:
-                self.results.update(
-                    energy=result["total_energy"].detach().cpu().numpy()[0],
-                    free_energy=result["total_energy"].detach().cpu().numpy()[0],
-                    forces=result["forces"].detach().cpu().numpy(),
+        if self.compute_stress:
+            self.results.update(
+                stress=self.stress_weight
+                * full_3x3_to_voigt_6_stress(
+                    result["stresses"].detach().cpu().numpy()[0]
                 )
-            if self.compute_stress:
-                self.results.update(
-                    stress=self.stress_weight
-                    * full_3x3_to_voigt_6_stress(
-                        result["stresses"].detach().cpu().numpy()[0]
-                    )
-                )
+            )
