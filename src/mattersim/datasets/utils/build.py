@@ -40,7 +40,11 @@ class AseDBDatasetCustomized(AseDBDataset):
         )
 
     def _load_dataset_get_ids(self, config: dict) -> list[int]:
-        if self.combined:
+        # we first load omat data then mptrj data. we need to
+        # keep this order to make sure loaded data are aligned with metadata and EFS.
+        # Be noted that the correct order is omat first then mptrj.
+        
+        if self.combined: # jiahang: if dataset has mptrj and sAlex, we should use --combined, no matter whether there are omat files.
             src = config["src"][0]
             filepaths = glob(src)
             mptrj_file = [fp for fp in filepaths if "mptrj" in os.path.basename(fp)]
@@ -59,7 +63,7 @@ class AseDBDatasetCustomized(AseDBDataset):
                         filepaths.append(path)
                     elif "*" in path or "?" in path:
                         filepaths = sorted(
-                            glob.glob(path),
+                            glob(path),
                             key=lambda p: int(re.search(r"part_(\d+)", p).group(1))
                         )
                     else:
@@ -72,10 +76,6 @@ class AseDBDatasetCustomized(AseDBDataset):
                 filepaths = sorted(glob(config["src"]))
 
         self.dbs = []
-
-        # we first load omat data then mptrj data. we need to
-        # keep this order to make sure loaded data are aligned with metadata and EFS.
-        # Be noted that the correct order is omat first then mptrj.
         
         for path in filepaths:
             try:
