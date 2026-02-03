@@ -951,7 +951,9 @@ class Potential(nn.Module):
         checkpoint = torch.load(load_path, map_location=device)
 
         assert checkpoint["model_name"] == model_name
-        # checkpoint["model_args"].update(kwargs) # jiahang: attention! we shall not update model architecture args in continue training or evaluation
+        # jiahang: attention! we shall not update model architecture args in continue training or evaluation
+        # otherwise the model loading will have problems.
+        # checkpoint["model_args"].update(kwargs) 
         model = M3Gnet(device=device, **checkpoint["model_args"]).to(device)
         model.load_state_dict(checkpoint["model"], strict=False)
 
