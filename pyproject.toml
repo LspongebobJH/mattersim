@@ -37,22 +37,21 @@ dependencies = [
     "emmet-core<0.84; python_version < '3.10'",
     "loguru",
     "mp-api",
-    "numpy>=2.0.0; python_version >= '3.10'",
-    "numpy<2.0.0; python_version < '3.10'",
+    "numpy==1.26.4",
     "opt_einsum_fx",
     "pydantic>=2.9.2",
     "pymatgen",
     "seekpath",
     "phonopy",
     "torch-ema>=0.3",
-    "torch>=2.2.0",
+    "torch==2.6.0",
     "torch_geometric>=2.5.3",
     "torch_runstats>=0.2.0",
-    "torchaudio>=2.2.0",
+    "torchaudio==2.4.1",
     "torchmetrics>=0.10.0",
-    "torchvision>=0.17.0",
+    "torchvision==0.15.1",
+    "torchcodec==0.6.0",
     "wandb",
-    "fairchem-core>=1.10.0"
 ]
 
 [project.optional-dependencies]
