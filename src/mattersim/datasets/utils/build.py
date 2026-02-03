@@ -15,6 +15,7 @@ from mattersim.datasets.utils.convertor import GraphConvertor
 from mattersim.utils.logger_utils import get_logger
 from tqdm import tqdm
 from ase.units import GPa
+from functools import cached_property
 
 import lmdb
 import pickle
@@ -28,9 +29,7 @@ class AseDBDatasetCustomized(AseDBDataset):
                  twobody_cutoff,
                  threebody_cutoff,
                  config,
-                 combined=False # if combined, then we use dataset omat_compressed+mptrj
                  ):
-        self.combined = combined
         super().__init__(config)
         self.convertor = GraphConvertor(
             model_type=model_type, 
@@ -40,40 +39,31 @@ class AseDBDatasetCustomized(AseDBDataset):
         )
 
     def _load_dataset_get_ids(self, config: dict) -> list[int]:
-        # we first load omat data then mptrj data. we need to
-        # keep this order to make sure loaded data are aligned with metadata and EFS.
-        # Be noted that the correct order is omat first then mptrj.
-        
-        if self.combined: # jiahang: if dataset has mptrj and sAlex, we should use --combined, no matter whether there are omat files.
-            src = config["src"][0]
-            filepaths = glob(src)
-            mptrj_file = [fp for fp in filepaths if "mptrj" in os.path.basename(fp)]
-            assert len(mptrj_file) == 1, "only support 1 mptrj file"
-            mptrj_file = mptrj_file[0]
-            filepaths = sorted([fp for fp in filepaths if "omat24" in os.path.basename(fp)], 
-                               key=lambda p: int(re.search(r"part_(\d+)", p).group(1)))
-            filepaths.append(mptrj_file)
-        else:
-            if isinstance(config["src"], list):
-                filepaths = []
-                for path in sorted(config["src"]):
-                    if os.path.isdir(path):
-                        filepaths.extend(sorted(glob(f"{path}/*")))
-                    elif os.path.isfile(path):
-                        filepaths.append(path)
-                    elif "*" in path or "?" in path:
-                        filepaths = sorted(
-                            glob(path),
+        if isinstance(config["src"], list):
+            filepaths = []
+            for path in sorted(config["src"]):
+                if os.path.isdir(path):
+                    filepaths.extend(sorted(glob(f"{path}/*")))
+                elif os.path.isfile(path):
+                    filepaths.append(path)
+                elif "*" in path or "?" in path:
+                    _filepaths = sorted(
+                        glob(path)
+                    )
+                    if "part_" in _filepaths[0]: # we only check the first filename
+                        _filepaths = sorted(
+                            _filepaths,
                             key=lambda p: int(re.search(r"part_(\d+)", p).group(1))
                         )
-                    else:
-                        raise RuntimeError(f"Error reading dataset in {path}!")
-            elif os.path.isfile(config["src"]):
-                filepaths = [config["src"]]
-            elif os.path.isdir(config["src"]):
-                filepaths = sorted(glob(f'{config["src"]}/*'))
-            else:
-                filepaths = sorted(glob(config["src"]))
+                    filepaths.extend(_filepaths)
+                else:
+                    raise RuntimeError(f"Error reading dataset in {path}!")
+        elif os.path.isfile(config["src"]):
+            filepaths = [config["src"]]
+        elif os.path.isdir(config["src"]):
+            filepaths = sorted(glob(f'{config["src"]}/*'))
+        else:
+            filepaths = sorted(glob(config["src"]))
 
         self.dbs = []
         
@@ -111,6 +101,44 @@ class AseDBDatasetCustomized(AseDBDataset):
         self._idlen_cumulative = np.cumsum(idlens).tolist()
 
         return list(range(sum(idlens)))
+    
+    @cached_property
+    def _metadata(self):
+        # logic to read metadata file here
+        metadata_npzs = []
+        if self.config.get("metadata_path", None) is not None:
+            metadata_npzs.append(
+                np.load(self.config["metadata_path"], allow_pickle=True)
+            )
+
+        else:
+            for path in self.paths:
+                if path.is_file() or "*" in str(self.paths[0]):
+                    metadata_file = path.parent / "metadata.npz"
+                else:
+                    metadata_file = path / "metadata.npz"
+                if metadata_file.is_file():
+                    metadata_npzs.append(np.load(metadata_file, allow_pickle=True))
+
+        if len(metadata_npzs) == 0:
+            logging.warning(
+                f"Could not find dataset metadata.npz files in '{self.paths}'"
+            )
+            return {}
+
+        metadata = {
+            field: np.concatenate([metadata[field] for metadata in metadata_npzs])
+            for field in metadata_npzs[0]
+        }
+
+        assert np.issubdtype(
+            metadata["natoms"].dtype, np.integer
+        ), f"Metadata natoms must be an integer type! not {metadata['natoms'].dtype}"
+        assert (
+            metadata["natoms"].shape[0] == len(self)
+        ), f"Loaded metadata size {metadata['natoms'].shape[0]} and dataset size {len(self)} mismatch."
+
+        return metadata
     
     def __getitem__(self, idx):
         ########## adapted from AseAtomsDataset ##########
@@ -233,7 +261,6 @@ def build_dataloader_from_atom_list(
         raise NotImplementedError
 
 def build_dataloader(
-    combined: bool,
     data_path: str,
     cutoff: float = 5.0,
     threebody_cutoff: float = 4.0,
@@ -246,7 +273,6 @@ def build_dataloader(
     drop_last=False,
     seed=42,
     is_distributed=False,
-    metadata_path=None,
     # args_dict=None,
     **kwargs
 ):
@@ -271,19 +297,17 @@ def build_dataloader(
         model_type=model_type,
         twobody_cutoff=cutoff,
         threebody_cutoff=threebody_cutoff,
-        combined=combined,
         config={
-            "src": [data_path],
+            "src": data_path if type(data_path) == list else [data_path],
             "a2g_args": {
                 "r_energy":True, 
                 "r_forces":True, 
                 "r_stress":True,
                 "r_edges": True,
             },
-            "metadata_path": metadata_path,
         }
     )
-
+    
     if is_distributed:
         num_replicas = distutils.get_world_size()
         rank = distutils.get_rank()
