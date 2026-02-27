@@ -21,6 +21,7 @@ import lmdb
 import pickle
 import os, bisect, re
 from glob import glob
+import logging
 logger = get_logger()
 
 class AseDBDatasetCustomized(AseDBDataset):
